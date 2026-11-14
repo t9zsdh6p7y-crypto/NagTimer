@@ -1,0 +1,372 @@
+/* Component and layout styles. Colors, fonts, and spacing come only
+   from tokens in theme.css — do not hardcode palettes here. */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height);
+  font-weight: var(--font-weight-regular);
+  min-height: 100%;
+}
+
+body {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+#app {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+}
+
+header.app-header {
+  height: var(--header-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-4);
+  padding-top: env(safe-area-inset-top);
+  border-bottom: var(--border-w) solid var(--color-border);
+  background: var(--color-surface);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+header.app-header h1 {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-medium);
+  margin: 0;
+}
+
+header.app-header .sub {
+  font-size: var(--font-size-xs);
+  color: var(--color-muted);
+}
+
+main {
+  flex: 1;
+  padding: var(--space-4);
+  padding-bottom: calc(var(--tabbar-h) + var(--space-5) + env(safe-area-inset-bottom));
+}
+
+nav.tabbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  display: flex;
+  border-top: var(--border-w) solid var(--color-border);
+  background: var(--color-surface);
+  height: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 10;
+}
+
+nav.tabbar button {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  min-height: var(--tabbar-h);
+  cursor: pointer;
+}
+
+nav.tabbar button[aria-current="page"] {
+  color: var(--color-fg);
+  font-weight: var(--font-weight-medium);
+}
+
+h2 {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-medium);
+  margin: 0 0 var(--space-3);
+}
+
+h3 {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  margin: var(--space-4) 0 var(--space-2);
+}
+
+p { margin: 0 0 var(--space-3); }
+
+.muted { color: var(--color-muted); font-size: var(--font-size-sm); }
+.warn { color: var(--color-warn); }
+.ok { color: var(--color-ok); }
+.danger { color: var(--color-danger); }
+
+.card {
+  background: var(--color-surface);
+  border: var(--border-w) solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.row {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.stack { display: flex; flex-direction: column; gap: var(--space-3); }
+
+label, .label {
+  display: block;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  margin-bottom: var(--space-1);
+}
+
+input[type="text"],
+input[type="number"],
+input[type="time"],
+input[type="date"],
+select,
+textarea {
+  width: 100%;
+  min-height: var(--tap-min);
+  font: inherit;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-w) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-fg);
+}
+
+textarea { min-height: 5rem; resize: vertical; }
+
+input:focus, select:focus, textarea:focus, button:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+button, .btn {
+  font: inherit;
+  font-weight: var(--font-weight-medium);
+  min-height: var(--tap-min);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-sm);
+  border: var(--border-w) solid var(--color-border);
+  background: var(--color-surface-2);
+  color: var(--color-fg);
+  cursor: pointer;
+}
+
+button.primary {
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  border-color: var(--color-accent);
+}
+
+button.danger {
+  background: var(--color-danger);
+  color: var(--color-danger-fg);
+  border-color: var(--color-danger);
+}
+
+button.link {
+  background: transparent;
+  border: 0;
+  color: var(--color-accent);
+  min-height: auto;
+  padding: var(--space-1);
+  text-decoration: underline;
+  font-weight: var(--font-weight-regular);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.big {
+  flex: 1;
+  min-width: 5.5rem;
+}
+
+.timer {
+  font-size: var(--font-size-timer);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.02em;
+  text-align: center;
+  margin: var(--space-3) 0;
+  font-family: var(--font-mono);
+}
+
+.progress {
+  height: 0.5rem;
+  background: var(--color-surface-2);
+  border: var(--border-w) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  margin: var(--space-2) 0 var(--space-3);
+}
+
+.progress > span {
+  display: block;
+  height: 100%;
+  background: var(--color-accent);
+  width: 0%;
+}
+
+.week-list, .session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.week-list li, .session-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  align-items: baseline;
+  padding: var(--space-3) 0;
+  border-bottom: var(--border-w) solid var(--color-border);
+}
+
+.week-list li:last-child, .session-list li:last-child { border-bottom: 0; }
+
+.days-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.days-picker label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-weight: var(--font-weight-regular);
+  border: var(--border-w) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  min-height: var(--tap-min);
+  margin: 0;
+  background: var(--color-surface);
+}
+
+.days-picker input { width: auto; min-height: auto; accent-color: var(--color-accent); }
+
+.mode-switch {
+  display: flex;
+  gap: 0;
+  margin-bottom: var(--space-4);
+  border: var(--border-w) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.mode-switch button {
+  flex: 1;
+  border: 0;
+  border-radius: 0;
+  background: var(--color-surface);
+}
+
+.mode-switch button[aria-pressed="true"] {
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+}
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  max-height: 22rem;
+  overflow-y: auto;
+}
+
+.bubble {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: var(--border-w) solid var(--color-border);
+  max-width: 95%;
+  white-space: pre-wrap;
+}
+
+.bubble.coach {
+  background: var(--color-surface);
+  align-self: flex-start;
+}
+
+.bubble.user {
+  background: var(--color-surface-2);
+  align-self: flex-end;
+}
+
+.chat-input {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-end;
+}
+
+.chat-input input { flex: 1; }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+}
+
+#nag-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--color-overlay-bg);
+  color: var(--color-overlay-fg);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: var(--space-6) var(--space-4);
+  max-width: var(--content-max);
+  margin: 0 auto;
+}
+
+#nag-overlay[hidden] { display: none; }
+
+#nag-overlay h2 {
+  font-size: var(--font-size-xl);
+  color: var(--color-overlay-fg);
+}
+
+#nag-overlay p { font-size: var(--font-size-lg); }
+
+#nag-overlay .muted { color: var(--color-overlay-muted); }
+
+#nag-overlay button.primary {
+  background: var(--color-surface);
+  color: var(--color-fg);
+  border-color: var(--color-surface);
+}
+
+#nag-overlay button {
+  background: transparent;
+  color: var(--color-overlay-fg);
+  border-color: var(--color-overlay-muted);
+}
+
+.field { margin-bottom: var(--space-4); }
+
+.errors { color: var(--color-danger); font-size: var(--font-size-sm); }
+
+.choice-row { display: flex; gap: var(--space-2); flex-wrap: wrap; }
