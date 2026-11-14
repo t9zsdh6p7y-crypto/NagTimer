@@ -1,0 +1,15 @@
+{
+  "name": "nag-timer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Nag v1 — weekly practice plan, daily check-in, and firm nudges.",
+  "scripts": {
+    "test": "node tests/run-tests.mjs",
+    "test:e2e": "node tests/e2e.mjs",
+    "start": "python3 -m http.server 8080 --bind 0.0.0.0"
+  },
+  "dependencies": {
+    "ws": "^8.23.0"
+  }
+}
