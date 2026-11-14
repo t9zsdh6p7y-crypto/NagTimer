@@ -157,23 +157,17 @@ try {
   is(voiceUi.fallback, "either mic button or fallback message is shown");
   is(voiceUi.speech.recognition ? voiceUi.hasMic : !voiceUi.hasMic, "mic hidden when recognition unsupported");
 
-  // Manual form path
+  // Manual form path. First visit is a stepped setup with Back; the full form
+  // is the review step, which is what an already-saved activity opens on.
   await cdpEval(debugPort, `document.querySelector('[data-setup-mode="manual"]').click(); true`);
-  await waitFor(() => cdpEval(debugPort, `document.querySelector("form[data-manual-setup]")`));
+  await waitFor(() => cdpEval(debugPort, `document.querySelector("[data-manual-back], form[data-manual-setup]")`));
   const saved = await cdpEval(debugPort, `
     (async () => {
       const f = document.querySelector("form[data-manual-setup]");
-      f.name.value = "piano lessons";
-      f.weeklyTargetMinutes.value = "180";
-      f.sessionsPerWeek.value = "3";
-      f.sessionLengthMinutes.value = "60";
-      f.checkInTime.value = "20:00";
-      f.intensity.value = "moderate";
-      // clear and set Mon Wed Fri
-      f.querySelectorAll("input[name=day]").forEach((c) => { if (c.checked) { c.checked = false; c.dispatchEvent(new Event("change", { bubbles: true })); } });
-      return "wired";
+      return f ? "form" : (document.querySelector("[data-manual-back]") ? "step" : "");
     })()
   `);
+  is(saved === "form" || saved === "step", "manual setup shows a step with Back or the review form", String(saved));
   // After unchecking, form may have rerendered. Set days properly in one go via __nag
   const plan = await cdpEval(debugPort, `
     (() => {

@@ -1,14 +1,16 @@
-const CACHE = "nag-v1-2";
+const CACHE = "nag-v1-3";
 const ASSETS = [
   "./",
   "./index.html",
   "./manifest.json",
   "./css/theme.css",
   "./css/app.css",
+  "./fonts/press-start-2p.woff2",
   "./js/app.js",
   "./js/util.js",
   "./js/timer.js",
   "./js/plan.js",
+  "./js/setup-flow.js",
   "./js/checkin.js",
   "./js/nags.js",
   "./js/identity.js",

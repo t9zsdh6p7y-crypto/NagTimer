@@ -44,7 +44,7 @@ function n(mins) {
 
 export function greeting(firstTime = true) {
   if (firstTime) {
-    return `Hi, I'm ${PERSONA.name}. I'll help you set up a weekly practice plan, then I'll check in and nudge you when it's time — or when you fall behind. You can talk to me or type. What activity are we planning? For example, piano lessons or studying.`;
+    return `Hi, I'm ${PERSONA.name}. I'll help you set up a practice plan, then I'll check in and nudge you when it's time — or when you fall behind. You can talk to me or type. What activity are we planning? For example, piano lessons or studying.`;
   }
   return `It's ${PERSONA.name}. What should we adjust?`;
 }
@@ -52,10 +52,26 @@ export function greeting(firstTime = true) {
 /** Setup dialogue lines. */
 export const SETUP_COPY = {
   askActivity: `What activity are we planning?`,
-  askWeekly: (name) =>
-    `Good. How much total time do you want to spend on ${name} each week? You can say something like "three hours" or "90 minutes."`,
-  askSessions: (name, weeklyLabel) =>
-    `${weeklyLabel} a week on ${name}. How many sessions per week?`,
+  askTimeFrame: (name) =>
+    `Is the time goal for ${name} per day, per week, or per month?`,
+  askGoal: (name, frame) => {
+    if (frame === "day") {
+      return `How much time on each day you practice ${name}? For example, "30 minutes" or "an hour."`;
+    }
+    if (frame === "month") {
+      return `How much total time do you want for ${name} each month? For example, "ten hours."`;
+    }
+    return `How much total time do you want to spend on ${name} each week? You can say something like "three hours" or "90 minutes."`;
+  },
+  askWeekStyle: (perWeekLabel, weekCount) =>
+    `Spread across ${weekCount} weeks this month, that's about ${perWeekLabel} a week. Use the same goal every week, or set a different goal for each week?`,
+  askWeekGoal: (index, count, label) =>
+    `How much time in week ${index + 1} of ${count} (${label})?`,
+  askSessions: (name, goalLabel, frame) => {
+    if (frame === "day") return `${goalLabel} on each day you do ${name}. How many sessions per week?`;
+    if (frame === "month") return `${goalLabel} a month on ${name}. How many sessions per week?`;
+    return `${goalLabel} a week on ${name}. How many sessions per week?`;
+  },
   askDays: (count) =>
     count === 1
       ? `Which day should that session be on?`
@@ -65,14 +81,15 @@ export const SETUP_COPY = {
   askStartOne: (dayName) => `What start time on ${dayName}?`,
   askStartAll: (daysLabel) =>
     `What start time? You can give one time for every session, or a time for each day (${daysLabel}).`,
-  confirmPlan: (summary) => `Here's the week I'm picturing:\n${summary}\nDoes that look right?`,
-  adjustPrompt: `What should we change — the activity, the weekly total, the days, or the times?`,
+  confirmPlan: (summary) => `Here's the plan I'm picturing:\n${summary}\nDoes that look right?`,
+  adjustPrompt: `What should we change — the activity, the time goal, the days, or the times?`,
   askCheckIn: `What time should I check in with you each day, to log whether you did that day's session and for how many minutes?`,
   askIntensity: `How hard should I nudge you? Gentle, Moderate, or Strict. Moderate is the default.`,
   done: (name) =>
-    `You're set. I'll use this plan for the week, check in daily, and nudge you when a session starts or you fall behind. Open the Week tab if you want to tweak a day. Let's have a good week of ${name}.`,
-  fallback: `I didn't catch that. You can type it instead, or switch to the manual form.`,
+    `You're set. I'll use this plan, check in daily, and nudge you when a session starts or you fall behind. Open Setup any time to edit it, or the Week tab to tweak a day. Let's get to ${name}.`,
+  fallback: `I didn't catch that. You can type it instead, use Back, or switch to the manual form.`,
   useManual: `No problem. Use the manual form and I'll stay out of the way.`,
+  keptAnswer: (value) => `Current answer: ${value}. Send a new one to change it.`,
 };
 
 export function planSummaryLines(activity) {
@@ -82,7 +99,17 @@ export function planSummaryLines(activity) {
       return `• ${names[s.weekday]} at ${s.start}, ${n(activity.sessionLengthMinutes)}`;
     })
     .join("\n");
-  return `${activity.name}: ${n(activity.weeklyTargetMinutes)} a week, ${activity.sessionsPerWeek} sessions.\n${days}`;
+  const frame = activity.timeFrame || "week";
+  const goal = n(activity.goalMinutes ?? activity.weeklyTargetMinutes);
+  let head;
+  if (frame === "day") head = `${goal} on each practice day`;
+  else if (frame === "month") {
+    if (activity.weekStyle === "custom" && activity.weekGoals?.length) {
+      const weeks = activity.weekGoals.map((m, i) => `week ${i + 1} ${n(m)}`).join(", ");
+      head = `${weeks}`;
+    } else head = `${goal} a month, same goal each week`;
+  } else head = `${goal} a week`;
+  return `${activity.name}: ${head}, ${activity.sessionsPerWeek} sessions.\n${days}`;
 }
 
 /**

@@ -17,6 +17,10 @@ import {
   sessionEndDate,
   sessionsOnDate,
   describeWeek,
+  weeklyMinutesFor,
+  weekOfMonth,
+  evenWeekGoals,
+  alignWeekGoals,
 } from "./plan.js";
 import {
   makeCheckIn,
@@ -37,11 +41,13 @@ import {
   canSnooze,
 } from "./nags.js";
 import { createCoach } from "./coach/engine.js";
+import { goBack, stepMeta } from "./coach/dialogue.js";
 import { PERSONA, nagCopy, ackCopy, snoozeCopy, checkInThanks } from "./coach/persona.js";
 import { detectSpeech, createRecognizer, speak, cancelSpeech } from "./coach/speech.js";
 import { playNagSound, vibrate } from "./audio.js";
 import { ensureActivityId, makeSnapshot, upsertSnapshot } from "./history.js";
 import { NudgeBus, ExternalNudgeSource } from "./nudge-sources.js";
+import { draftFromActivity, goBackManual, goForwardManual, manualSteps } from "./setup-flow.js";
 import {
   localDateISO,
   formatHM,
@@ -63,6 +69,7 @@ nudgeBus.subscribe(onExternalNudge);
 let state = loadState();
 let tab = "today";
 let setupMode = state.activity ? "manual" : "choice";
+let manualStep = state.activity ? "review" : "name";
 let nowMs = Date.now();
 let recognizer = null;
 let listening = false;
@@ -79,6 +86,13 @@ function esc(s) {
 
 function save() {
   saveState(state);
+}
+
+function applyTheme() {
+  const theme = state.settings?.theme === "plain" ? "plain" : "arcade";
+  document.documentElement.dataset.theme = theme;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", theme === "plain" ? "#243d34" : "#07060d");
 }
 
 function todayISO(d = new Date(nowMs)) {
@@ -121,6 +135,7 @@ function todaysSessions() {
 /* ---------------- render ---------------- */
 
 function render() {
+  applyTheme();
   ensureWeek();
   const root = main();
   if (!root) return;
@@ -148,7 +163,7 @@ function renderToday() {
   if (!state.activity) {
     return `
       <section class="card">
-        <h2>Set up your week</h2>
+        <h2>Set up your plan</h2>
         <p>Plan an activity, pick your days and times, then I'll check in and nudge you when a session starts or you fall behind.</p>
         <p class="muted">I'm ${esc(PERSONA.name)}, your ${esc(PERSONA.title)}. You can talk to me or fill in the form.</p>
         <button type="button" class="primary" data-go="setup">Set up</button>
@@ -203,6 +218,7 @@ function renderToday() {
     <section class="card">
       <h2>${esc(state.activity.name)}</h2>
       <p class="muted">${esc(prog.label)}${prog.behind ? " · behind" : ""}</p>
+      <p><button type="button" class="link" data-edit-activity>Edit activity</button></p>
       <div class="progress" aria-hidden="true"><span style="width:${pct}%"></span></div>
       ${sessHtml}
     </section>
@@ -251,6 +267,7 @@ function renderWeek() {
     <section class="card">
       <h2>This week</h2>
       <p class="muted">Week of ${esc(state.week.weekId)}. ${esc(prog.label)}</p>
+      <p><button type="button" class="link" data-edit-activity>Edit activity</button></p>
       <div class="progress"><span style="width:${Math.min(100, Math.round(prog.ratio * 100))}%"></span></div>
       <ul class="week-list">${items || "<li>No sessions scripted.</li>"}</ul>
     </section>
@@ -287,18 +304,158 @@ function renderSetup() {
     </div>`;
 
   if (setupMode === "choice") {
+    const back = state.activity
+      ? `<button type="button" data-setup-back="leave">Back</button>`
+      : "";
     return `
       <section class="card">
         <h2>How do you want to set this up?</h2>
-        <p>I'm ${esc(PERSONA.name)}. I can walk you through a weekly plan, or you can fill in the form yourself. The app works fully without voice.</p>
+        <p>I'm ${esc(PERSONA.name)}. I can walk you through a plan, or you can fill in the form yourself. The app works fully without voice.</p>
         ${modeBar}
+        ${back}
       </section>`;
   }
 
   if (setupMode === "voice") {
     return modeBar + renderCoach();
   }
-  return modeBar + renderManualForm();
+  return modeBar + renderManual();
+}
+
+function formDraft() {
+  if (state._formDraft) return state._formDraft;
+  if (state.activity) return draftFromActivity(state.activity);
+  return draftFromActivity(null);
+}
+
+function shortDate(iso) {
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const [, m, d] = String(iso || "").split("-");
+  if (!m || !d) return iso || "";
+  return `${months[Number(m) - 1]} ${Number(d)}`;
+}
+
+function goalFieldLabel(frame) {
+  if (frame === "day") return "Minutes on each chosen day";
+  if (frame === "month") return "Total time per month (minutes)";
+  return "Total time per week (minutes)";
+}
+
+function dayPickerHtml(draft) {
+  const selected = new Set((draft.schedule || []).map((s) => Number(s.weekday)));
+  const timeFor = (d) => (draft.schedule || []).find((s) => Number(s.weekday) === d)?.start || "16:00";
+  return [1, 2, 3, 4, 5, 6, 0].map((d) => `
+    <label>
+      <input type="checkbox" name="day" value="${d}" ${selected.has(d) ? "checked" : ""} />
+      ${WEEKDAY_SHORT[d]}
+    </label>
+    ${selected.has(d) ? `<label class="sr-only">Start ${WEEKDAY_SHORT[d]}</label><input type="time" name="start-${d}" value="${esc(timeFor(d))}" />` : ""}
+  `).join("");
+}
+
+function stepNav(step, draft) {
+  const steps = manualSteps(draft);
+  const i = Math.max(0, steps.indexOf(step));
+  return `<p class="muted">Step ${i + 1} of ${steps.length}</p>`;
+}
+
+function renderManual() {
+  const draft = formDraft();
+  const steps = manualSteps(draft);
+  if (!steps.includes(manualStep)) manualStep = state.activity ? "review" : "name";
+  if (manualStep === "review") return renderManualForm(draft);
+  return renderManualStep(manualStep, draft);
+}
+
+function renderManualStep(step, draft) {
+  const frame = draft.timeFrame || "week";
+  let body = "";
+  let title = "Activity setup";
+  if (step === "name") {
+    title = "Activity";
+    body = `
+      <label for="act-name">What are you practicing?</label>
+      <input id="act-name" name="name" type="text" required placeholder="e.g. piano lessons" value="${esc(draft.name || "")}" />`;
+  } else if (step === "timeFrame") {
+    title = "Time goal";
+    body = `
+      <p>Is this goal per day, per week, or per month?</p>
+      <div class="stack">
+        <button type="button" data-pick-frame="day" aria-pressed="${frame === "day"}">Per day</button>
+        <button type="button" data-pick-frame="week" aria-pressed="${frame === "week"}">Per week</button>
+        <button type="button" data-pick-frame="month" aria-pressed="${frame === "month"}">Per month</button>
+      </div>`;
+  } else if (step === "goal") {
+    title = "How much time";
+    body = `
+      <label for="goal-minutes">${esc(goalFieldLabel(frame))}</label>
+      <input id="goal-minutes" name="goalMinutes" type="number" min="1" inputmode="numeric" required value="${esc(draft.goalMinutes ?? "")}" />
+      <p class="muted">${frame === "day" ? "This applies to each day you choose." : frame === "month" ? "This is spread across the weeks of the month." : "This is the total for the week."}</p>`;
+  } else if (step === "weekStyle") {
+    title = "Week by week";
+    const info = weekOfMonth(new Date(nowMs), draft.weekStartsOn ?? 1);
+    body = `
+      <p>This month has ${info.count} weeks. Use the same goal every week, or set each week yourself?</p>
+      <div class="stack">
+        <button type="button" data-pick-style="even" aria-pressed="${draft.weekStyle !== "custom"}">Same every week</button>
+        <button type="button" data-pick-style="custom" aria-pressed="${draft.weekStyle === "custom"}">Set each week</button>
+      </div>`;
+  } else if (step === "weekGoals") {
+    title = "Each week";
+    const info = weekOfMonth(new Date(nowMs), draft.weekStartsOn ?? 1);
+    const goals = Array.isArray(draft.weekGoals) && draft.weekGoals.length
+      ? alignWeekGoals(draft.weekGoals, info.count, draft.goalMinutes)
+      : evenWeekGoals(draft.goalMinutes, info.count);
+    body = `
+      <p class="muted">Minutes for each week. The week plan uses that week's number.</p>
+      ${info.weeks.map((iso, i) => `
+        <label for="week-goal-${i}">Week ${i + 1} · ${esc(shortDate(iso))}
+          <input id="week-goal-${i}" data-week-goal type="number" min="1" inputmode="numeric" value="${esc(goals[i] ?? "")}" />
+        </label>`).join("")}`;
+  } else if (step === "sessions") {
+    title = "Sessions";
+    body = `
+      <label for="count">Sessions per week</label>
+      <input id="count" name="sessionsPerWeek" type="number" min="1" max="14" inputmode="numeric" required value="${esc(draft.sessionsPerWeek || "")}" />`;
+  } else if (step === "days") {
+    title = "Days and times";
+    body = `
+      <p class="muted">Pick ${esc(draft.sessionsPerWeek || "")} day${Number(draft.sessionsPerWeek) === 1 ? "" : "s"} and a start time for each.</p>
+      <div class="days-picker">${dayPickerHtml(draft)}</div>`;
+  } else if (step === "length") {
+    title = "Session length";
+    body = `
+      <label for="length">Minutes per session</label>
+      <input id="length" name="sessionLengthMinutes" type="number" min="1" inputmode="numeric" value="${esc(draft.sessionLengthMinutes || "")}" />
+      <p class="muted">Suggested from your goal divided by the number of sessions. Change it if you want a different length.</p>`;
+  } else if (step === "checkIn") {
+    title = "Daily check-in";
+    body = `
+      <label for="checkin">What time should I ask about today?</label>
+      <input id="checkin" name="checkInTime" type="time" required value="${esc(draft.checkInTime || "20:00")}" />`;
+  } else if (step === "intensity") {
+    title = "Nudges";
+    body = `
+      <label for="intensity">How firm should the nudges be?</label>
+      <select id="intensity" name="intensity">
+        <option value="gentle" ${draft.intensity === "gentle" ? "selected" : ""}>Gentle</option>
+        <option value="moderate" ${draft.intensity === "moderate" || !draft.intensity ? "selected" : ""}>Moderate (default)</option>
+        <option value="strict" ${draft.intensity === "strict" ? "selected" : ""}>Strict</option>
+      </select>`;
+  }
+  return `
+    <section class="card" data-manual-step="${esc(step)}">
+      ${stepNav(step, draft)}
+      <h2>${esc(title)}</h2>
+      <div class="stack" data-step-fields>
+        ${body}
+        <div id="form-errors" class="errors" hidden></div>
+        <div class="row">
+          <button type="button" data-manual-back>Back</button>
+          <button type="button" class="primary" data-manual-next>Next</button>
+        </div>
+      </div>
+    </section>`;
 }
 
 function renderCoach() {
@@ -309,16 +466,22 @@ function renderCoach() {
   const recNote = speechSupport.recognition
     ? ""
     : `<p class="muted">Voice input isn't available in this browser. You can type to ${esc(PERSONA.name)}, or use the manual form.</p>`;
-  const speakNote = speechSupport.synthesis ? "" : "";
   const mic = speechSupport.recognition
-    ? `<button type="button" data-mic aria-pressed="${listening}" ${listening ? "" : ""}>${listening ? "Listening…" : "Speak"}</button>`
+    ? `<button type="button" data-mic aria-pressed="${listening}">${listening ? "Listening…" : "Speak"}</button>`
     : "";
+  const choices = (state.coach.choices || []).map((c) =>
+    `<button type="button" data-coach-choice="${esc(c)}">${esc(c)}</button>`
+  ).join("");
   return `
     <section class="card">
       <h2>Talk with ${esc(PERSONA.name)}</h2>
       <p class="muted">${esc(PERSONA.summary)}</p>
-      ${recNote}${speakNote}
+      ${recNote}
       <div class="chat" id="chat-log">${bubbles || ""}</div>
+      <div class="row">
+        <button type="button" data-coach-back>Back</button>
+      </div>
+      ${choices ? `<div class="choice-row">${choices}</div>` : ""}
       <form data-coach-send class="chat-input">
         <label class="sr-only" for="coach-text">Your reply</label>
         <input type="text" id="coach-text" name="text" autocomplete="off" placeholder="Type a reply" />
@@ -329,39 +492,53 @@ function renderCoach() {
   `;
 }
 
-function renderManualForm() {
-  const a = state._formDraft || state.activity || {
-    name: "",
-    weeklyTargetMinutes: 180,
-    sessionsPerWeek: 3,
-    sessionLengthMinutes: 60,
-    schedule: [],
-    checkInTime: "20:00",
-    intensity: "moderate",
-    weekStartsOn: 1,
-  };
-  const selected = new Set((a.schedule || []).map((s) => s.weekday));
-  const timeFor = (d) => (a.schedule || []).find((s) => s.weekday === d)?.start || "16:00";
-  const dayBoxes = [1, 2, 3, 4, 5, 6, 0].map((d) => `
-    <label>
-      <input type="checkbox" name="day" value="${d}" ${selected.has(d) ? "checked" : ""} />
-      ${WEEKDAY_SHORT[d]}
-    </label>
-    ${selected.has(d) ? `<label class="sr-only">Start ${WEEKDAY_SHORT[d]}</label><input type="time" name="start-${d}" value="${esc(timeFor(d))}" />` : ""}
-  `).join("");
+function renderManualForm(draft) {
+  const a = draft || formDraft();
+  const frame = a.timeFrame || "week";
+  const amount = a.goalMinutes != null ? a.goalMinutes : a.weeklyTargetMinutes;
+  const info = frame === "month" ? weekOfMonth(new Date(nowMs), a.weekStartsOn ?? 1) : null;
+  const goals = frame === "month"
+    ? (a.weekStyle === "custom"
+      ? alignWeekGoals(a.weekGoals || [], info.count, amount)
+      : evenWeekGoals(amount, info.count))
+    : [];
+  const weekFields = frame === "month" ? `
+    <div class="field">
+      <label for="week-style">How the month is split</label>
+      <select id="week-style" name="weekStyle">
+        <option value="even" ${a.weekStyle !== "custom" ? "selected" : ""}>Same goal every week</option>
+        <option value="custom" ${a.weekStyle === "custom" ? "selected" : ""}>Different goal each week</option>
+      </select>
+    </div>
+    ${a.weekStyle === "custom" ? info.weeks.map((iso, i) => `
+      <div class="field">
+        <label for="week-goal-${i}">Week ${i + 1} · ${esc(shortDate(iso))} (minutes)</label>
+        <input id="week-goal-${i}" data-week-goal type="number" min="1" inputmode="numeric" value="${esc(goals[i] ?? "")}" />
+      </div>`).join("") : `<p class="muted">About ${esc(String(goals[0] || 0))} minutes each week this month. The week you are in uses that week's share.</p>`}
+  ` : "";
 
   return `
     <section class="card">
-      <h2>Activity setup</h2>
+      ${stepNav("review", a)}
+      <h2>${state.activity ? "Edit activity" : "Review plan"}</h2>
       <form data-manual-setup class="stack">
         <div class="field">
           <label for="act-name">Activity</label>
           <input id="act-name" name="name" type="text" required placeholder="e.g. piano lessons" value="${esc(a.name)}" />
         </div>
         <div class="field">
-          <label for="weekly">Total time per week (minutes)</label>
-          <input id="weekly" name="weeklyTargetMinutes" type="number" min="1" required value="${esc(a.weeklyTargetMinutes)}" />
+          <label for="time-frame">Time goal is</label>
+          <select id="time-frame" name="timeFrame">
+            <option value="day" ${frame === "day" ? "selected" : ""}>Per day</option>
+            <option value="week" ${frame === "week" ? "selected" : ""}>Per week</option>
+            <option value="month" ${frame === "month" ? "selected" : ""}>Per month</option>
+          </select>
         </div>
+        <div class="field">
+          <label for="weekly">${esc(goalFieldLabel(frame))}</label>
+          <input id="weekly" name="weeklyTargetMinutes" type="number" min="1" required value="${esc(amount)}" />
+        </div>
+        ${weekFields}
         <div class="field">
           <label for="count">Sessions per week</label>
           <input id="count" name="sessionsPerWeek" type="number" min="1" max="14" required value="${esc(a.sessionsPerWeek)}" />
@@ -369,11 +546,11 @@ function renderManualForm() {
         <div class="field">
           <label for="length">Session length (minutes)</label>
           <input id="length" name="sessionLengthMinutes" type="number" min="1" value="${esc(a.sessionLengthMinutes)}" />
-          <p class="muted">Leave as derived from weekly total ÷ sessions, or set it yourself. We'll warn if the product doesn't match the weekly total.</p>
+          <p class="muted">Suggested from this week's goal divided by the sessions. We'll warn if they don't line up. A monthly plan can use a different goal each week.</p>
         </div>
         <div class="field">
           <span class="label">Days and start times</span>
-          <div class="days-picker">${dayBoxes}</div>
+          <div class="days-picker">${dayPickerHtml(a)}</div>
         </div>
         <div class="field">
           <label for="checkin">Daily check-in time</label>
@@ -388,7 +565,10 @@ function renderManualForm() {
           </select>
         </div>
         <div id="form-errors" class="errors" hidden></div>
-        <button type="submit" class="primary">Save plan</button>
+        <div class="row">
+          <button type="button" data-manual-back>Back</button>
+          <button type="submit" class="primary">Save plan</button>
+        </div>
       </form>
     </section>
   `;
@@ -423,6 +603,16 @@ function renderSettings() {
       </div>
     </section>
     <section class="card">
+      <h2>Appearance</h2>
+      <label>Theme
+        <select data-setting-theme>
+          <option value="arcade" ${state.settings.theme !== "plain" ? "selected" : ""}>Arcade</option>
+          <option value="plain" ${state.settings.theme === "plain" ? "selected" : ""}>Plain</option>
+        </select>
+      </label>
+      <p class="muted">Arcade is the default. Plain is the earlier quiet look. Colors and fonts stay in the theme file.</p>
+    </section>
+    <section class="card">
       <h2>Voice</h2>
       <p class="muted">Recognition: ${speechSupport.recognition ? "available" : "not supported here"}. Spoken replies: ${speechSupport.synthesis ? "available" : "not supported here"}.</p>
       <label><input type="checkbox" data-setting="voiceEnabled" ${state.settings.voiceEnabled ? "checked" : ""} ${speechSupport.recognition ? "" : "disabled"} /> Enable voice input when available</label>
@@ -451,9 +641,17 @@ function bindView() {
   root.querySelectorAll("[data-go]").forEach((b) => {
     b.addEventListener("click", () => {
       tab = b.dataset.go;
-      if (tab === "setup" && setupMode === "choice" && !state.activity) setupMode = "choice";
       render();
     });
+  });
+
+  root.querySelectorAll("[data-edit-activity]").forEach((b) => {
+    b.addEventListener("click", () => editActivity());
+  });
+
+  root.querySelector("[data-setup-back='leave']")?.addEventListener("click", () => {
+    tab = "today";
+    render();
   });
 
   root.querySelectorAll("[data-timer]").forEach((b) => {
@@ -497,6 +695,43 @@ function bindView() {
   const mic = root.querySelector("[data-mic]");
   if (mic) mic.addEventListener("click", toggleMic);
 
+  root.querySelector("[data-coach-back]")?.addEventListener("click", () => backCoach());
+  root.querySelectorAll("[data-coach-choice]").forEach((b) => {
+    b.addEventListener("click", () => sendToCoach(b.dataset.coachChoice));
+  });
+
+  root.querySelector("[data-manual-back]")?.addEventListener("click", () => backManual(root));
+  root.querySelector("[data-manual-next]")?.addEventListener("click", () => nextManual(root));
+  root.querySelectorAll("[data-pick-frame]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const draft = formDraft();
+      draft.timeFrame = b.dataset.pickFrame;
+      if (draft.timeFrame !== "month") draft.weekStyle = "even";
+      state._formDraft = draft;
+      manualStep = goForwardManual("timeFrame", draft).step;
+      render();
+    });
+  });
+  root.querySelectorAll("[data-pick-style]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const draft = readStepDraft("weekStyle", root) || formDraft();
+      draft.weekStyle = b.dataset.pickStyle;
+      if (draft.weekStyle !== "custom") draft.weekGoals = null;
+      state._formDraft = draft;
+      manualStep = goForwardManual("weekStyle", draft).step;
+      if (manualStep === "weekGoals") prefillWeekGoals(draft);
+      render();
+    });
+  });
+  root.querySelectorAll("[data-manual-step] input[name=day]").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      const draft = readStepDraft(manualStep, root);
+      if (!draft) return;
+      state._formDraft = draft;
+      render();
+    });
+  });
+
   const manual = root.querySelector("form[data-manual-setup]");
   if (manual) {
     manual.addEventListener("submit", (e) => {
@@ -513,12 +748,25 @@ function bindView() {
     const count = manual.sessionsPerWeek;
     const length = manual.sessionLengthMinutes;
     const maybeDerive = () => {
-      const d = deriveSessionLength(weekly.value, count.value);
+      const frame = manual.timeFrame?.value || "week";
+      const weekStyle = manual.weekStyle?.value || "even";
+      const weekGoals = [...manual.querySelectorAll("[data-week-goal]")].map((el) => Number(el.value));
+      const weeklyMinutes = weeklyMinutesFor({
+        timeFrame: frame,
+        goalMinutes: Number(weekly.value),
+        weekStyle,
+        weekGoals: weekStyle === "custom" ? weekGoals : null,
+        sessionsPerWeek: Number(count.value),
+        weekStartsOn: 1,
+      }, new Date(nowMs));
+      const d = deriveSessionLength(weeklyMinutes, count.value);
       if (d.ok && !length.dataset.touched) length.value = d.minutes;
     };
     weekly?.addEventListener("change", maybeDerive);
     count?.addEventListener("change", maybeDerive);
     length?.addEventListener("input", () => { length.dataset.touched = "1"; });
+    manual.timeFrame?.addEventListener("change", () => stashManualAndRerender(manual));
+    manual.weekStyle?.addEventListener("change", () => stashManualAndRerender(manual));
   }
 
   root.querySelectorAll("[data-edit-session]").forEach((b) => {
@@ -569,6 +817,11 @@ function bindView() {
       save();
     });
   });
+  root.querySelector("[data-setting-theme]")?.addEventListener("change", (e) => {
+    state.settings.theme = e.target.value === "plain" ? "plain" : "arcade";
+    save();
+    render();
+  });
   root.querySelector("[data-export]")?.addEventListener("click", () => {
     const blob = new Blob([exportState(state)], { type: "application/json" });
     const a = document.createElement("a");
@@ -580,57 +833,186 @@ function bindView() {
     if (confirm("Clear all plans, check-ins, and timer data on this device?")) {
       state = clearState();
       setupMode = "choice";
+      manualStep = "name";
       tab = "setup";
       render();
     }
   });
 }
 
-function stashManualAndRerender(form) {
-  const fd = new FormData(form);
-  const days = fd.getAll("day").map(Number);
-  const schedule = days.map((weekday) => ({
+function scheduleFrom(root) {
+  const days = [...root.querySelectorAll("input[name=day]:checked")].map((x) => Number(x.value));
+  return days.map((weekday) => ({
     weekday,
-    start: form.querySelector(`[name=start-${weekday}]`)?.value || "16:00",
+    start: root.querySelector(`[name=start-${weekday}]`)?.value || "16:00",
   }));
-  state._formDraft = {
-    name: fd.get("name"),
-    weeklyTargetMinutes: Number(fd.get("weeklyTargetMinutes")),
-    sessionsPerWeek: Number(fd.get("sessionsPerWeek")),
-    sessionLengthMinutes: Number(fd.get("sessionLengthMinutes")),
-    schedule,
-    checkInTime: fd.get("checkInTime"),
-    intensity: fd.get("intensity"),
-    weekStartsOn: 1,
-  };
+}
+
+function showStepError(root, message) {
+  const box = root.querySelector("#form-errors");
+  if (!box) return;
+  box.hidden = !message;
+  box.textContent = message || "";
+}
+
+function prefillWeekGoals(draft) {
+  const info = weekOfMonth(new Date(nowMs), draft.weekStartsOn ?? 1);
+  if (!Array.isArray(draft.weekGoals) || draft.weekGoals.length === 0) {
+    draft.weekGoals = evenWeekGoals(draft.goalMinutes, info.count);
+  }
+}
+
+function readStepDraft(step, root) {
+  const draft = { ...formDraft(), schedule: (formDraft().schedule || []).map((s) => ({ ...s })) };
+  if (Array.isArray(draft.weekGoals)) draft.weekGoals = [...draft.weekGoals];
+  if (step === "name") draft.name = root.querySelector("[name=name]")?.value ?? draft.name;
+  if (step === "goal") {
+    const n = Number(root.querySelector("[name=goalMinutes]")?.value);
+    if (Number.isFinite(n)) draft.goalMinutes = n;
+  }
+  if (step === "weekGoals") {
+    draft.weekStyle = "custom";
+    draft.weekGoals = [...root.querySelectorAll("[data-week-goal]")].map((el) => Number(el.value));
+  }
+  if (step === "sessions") {
+    const n = Number(root.querySelector("[name=sessionsPerWeek]")?.value);
+    if (Number.isFinite(n)) draft.sessionsPerWeek = n;
+  }
+  if (step === "days") draft.schedule = scheduleFrom(root);
+  if (step === "length") {
+    const n = Number(root.querySelector("[name=sessionLengthMinutes]")?.value);
+    if (Number.isFinite(n) && n > 0) draft.sessionLengthMinutes = n;
+  }
+  if (step === "checkIn") draft.checkInTime = root.querySelector("[name=checkInTime]")?.value || draft.checkInTime;
+  if (step === "intensity") draft.intensity = root.querySelector("[name=intensity]")?.value || draft.intensity;
+  return draft;
+}
+
+function stepError(step, draft) {
+  if (step === "name" && !String(draft.name || "").trim()) return "Pick an activity name.";
+  if (step === "goal" && !(Number(draft.goalMinutes) > 0)) return "Enter a time greater than zero.";
+  if (step === "weekGoals" && (draft.weekGoals || []).some((n) => !(Number(n) > 0))) return "Each week needs a goal greater than zero.";
+  if (step === "sessions" && !(Number(draft.sessionsPerWeek) >= 1 && Number(draft.sessionsPerWeek) <= 14)) {
+    return "Sessions per week must be between 1 and 14.";
+  }
+  if (step === "days") {
+    const count = Number(draft.sessionsPerWeek);
+    if ((draft.schedule || []).length !== count) {
+      return `Choose ${count} day${count === 1 ? "" : "s"}.`;
+    }
+  }
+  if (step === "length" && !(Number(draft.sessionLengthMinutes) > 0)) return "Set a session length.";
+  if (step === "checkIn" && !draft.checkInTime) return "Pick a check-in time.";
+  return "";
+}
+
+function backManual(root) {
+  const step = root.querySelector("[data-manual-step]")?.getAttribute("data-manual-step") || manualStep;
+  const draft = step === "review"
+    ? draftFromForm(root.querySelector("form[data-manual-setup]"))
+    : (readStepDraft(step, root) || formDraft());
+  state._formDraft = draft;
+  const prev = goBackManual(step, draft);
+  if (prev.atStart) {
+    manualStep = "name";
+    setupMode = "choice";
+  } else {
+    manualStep = prev.step;
+    state._formDraft = prev.draft;
+  }
   render();
 }
 
-function saveManualForm(form) {
-  const fd = new FormData(form);
-  const days = [...form.querySelectorAll("input[name=day]:checked")].map((x) => Number(x.value));
-  const schedule = days.map((weekday) => ({
-    weekday,
-    start: form.querySelector(`[name=start-${weekday}]`)?.value || "16:00",
-  }));
-  let length = Number(fd.get("sessionLengthMinutes"));
-  const weekly = Number(fd.get("weeklyTargetMinutes"));
-  const count = Number(fd.get("sessionsPerWeek"));
-  if (!length) {
-    const d = deriveSessionLength(weekly, count);
-    if (d.ok) length = d.minutes;
+function nextManual(root) {
+  const step = root.querySelector("[data-manual-step]")?.getAttribute("data-manual-step") || manualStep;
+  const draft = readStepDraft(step, root);
+  const error = stepError(step, draft);
+  if (error) {
+    showStepError(root, error);
+    return;
   }
-  const input = {
+  draft.name = String(draft.name || "").trim();
+  if (step === "length") {
+    const weekly = weeklyMinutesFor(draft, new Date(nowMs));
+    const derived = deriveSessionLength(weekly, draft.sessionsPerWeek);
+    draft.sessionLengthCustom = !(derived.ok && derived.minutes === Number(draft.sessionLengthMinutes));
+  }
+  state._formDraft = draft;
+  const next = goForwardManual(step, draft);
+  if (next.step === "length" && !draft.sessionLengthCustom) {
+    const weekly = weeklyMinutesFor(draft, new Date(nowMs));
+    const derived = deriveSessionLength(weekly, draft.sessionsPerWeek);
+    if (derived.ok) draft.sessionLengthMinutes = derived.minutes;
+  }
+  if (next.step === "weekGoals") prefillWeekGoals(draft);
+  manualStep = next.step;
+  render();
+}
+
+function editActivity() {
+  tab = "setup";
+  setupMode = "manual";
+  manualStep = "review";
+  state._formDraft = state.activity ? draftFromActivity(state.activity) : null;
+  render();
+}
+
+function draftFromForm(form) {
+  if (!form) return formDraft();
+  const fd = new FormData(form);
+  const timeFrame = fd.get("timeFrame") || "week";
+  const amount = Number(fd.get("weeklyTargetMinutes"));
+  const weekStyle = timeFrame === "month" ? (fd.get("weekStyle") || "even") : "even";
+  const info = weekOfMonth(new Date(nowMs), 1);
+  let weekGoals = null;
+  if (timeFrame === "month" && weekStyle === "custom") {
+    const inputs = [...form.querySelectorAll("[data-week-goal]")];
+    weekGoals = inputs.length
+      ? inputs.map((el) => Number(el.value))
+      : evenWeekGoals(amount, info.count);
+  }
+  const count = Number(fd.get("sessionsPerWeek"));
+  const schedule = scheduleFrom(form);
+  let length = Number(fd.get("sessionLengthMinutes"));
+  const weekly = weeklyMinutesFor({
+    timeFrame,
+    goalMinutes: amount,
+    weekStyle,
+    weekGoals,
+    sessionsPerWeek: count,
+    schedule,
+    weekStartsOn: 1,
+  }, new Date(nowMs));
+  const derived = deriveSessionLength(weekly, count);
+  if (!length && derived.ok) length = derived.minutes;
+  const sessionLengthCustom = !(derived.ok && length === derived.minutes);
+  return {
+    id: state.activity?.id || null,
     name: String(fd.get("name") || "").trim(),
+    timeFrame,
+    goalMinutes: amount,
+    weekStyle,
+    weekGoals,
     weeklyTargetMinutes: weekly,
     sessionsPerWeek: count,
     sessionLengthMinutes: length,
+    sessionLengthCustom,
     schedule,
     checkInTime: fd.get("checkInTime") || "20:00",
     intensity: fd.get("intensity") || "moderate",
     weekStartsOn: 1,
   };
-  const v = validatePlan(input);
+}
+
+function stashManualAndRerender(form) {
+  state._formDraft = draftFromForm(form);
+  manualStep = "review";
+  render();
+}
+
+function saveManualForm(form) {
+  const input = draftFromForm(form);
+  const v = validatePlan({ ...input, now: new Date(nowMs) });
   const box = form.querySelector("#form-errors") || document.getElementById("form-errors");
   if (!v.valid) {
     if (box) {
@@ -644,18 +1026,21 @@ function saveManualForm(form) {
     box.textContent = v.warnings.join(" ");
   }
   state._formDraft = null;
-  applyActivity(normalizeActivity(input));
+  manualStep = "review";
+  applyActivity(normalizeActivity({ ...input, now: new Date(nowMs) }, new Date(nowMs)));
   tab = "week";
   render();
 }
 
 function applyActivity(act) {
   const kept = state.activity?.id;
-  state.activity = ensureActivityId(act);
+  const normalized = act?.timeFrame ? act : normalizeActivity(act, new Date(nowMs));
+  state.activity = ensureActivityId(normalized);
   if (kept) state.activity.id = kept;
   state.week = buildWeekPlan(state.activity, new Date(nowMs), null);
   state._unsaved = false;
   state.coach.step = "done";
+  manualStep = "review";
   recordProgress();
   save();
 }
@@ -782,10 +1167,15 @@ function submitCheckIn(sessionId, done, minutes) {
 
 /* ---------------- coach ---------------- */
 
-async function startCoach() {
-  const turn = await coach.start({ draft: state.coach.draft || {}, step: "askActivity" });
+function rememberCoachTurn(turn) {
   state.coach.draft = turn.draft;
   state.coach.step = turn.step;
+  state.coach.choices = turn.choices || null;
+}
+
+async function startCoach() {
+  const turn = await coach.start({ draft: state.coach.draft || {}, step: "askActivity" });
+  rememberCoachTurn(turn);
   state.coach.log = [{ role: "coach", text: turn.reply }];
   save();
   render();
@@ -798,11 +1188,15 @@ async function sendToCoach(text) {
   const turn = await coach.respond(text, {
     draft: state.coach.draft,
     step: state.coach.step,
+    now: new Date(nowMs),
   });
-  state.coach.draft = turn.draft;
-  state.coach.step = turn.step;
+  rememberCoachTurn(turn);
   state.coach.log.push({ role: "coach", text: turn.reply });
-  if (turn.switchToManual) setupMode = "manual";
+  if (turn.switchToManual) {
+    setupMode = "manual";
+    manualStep = state.activity ? "review" : "name";
+    if (turn.draft) state._formDraft = draftFromActivity(turn.draft);
+  }
   if (turn.done && turn.activity) {
     applyActivity(turn.activity);
   }
@@ -810,6 +1204,26 @@ async function sendToCoach(text) {
   render();
   scrollChat();
   maybeSpeak(turn.reply);
+}
+
+function backCoach() {
+  const prev = goBack(state.coach.step || "askActivity", state.coach.draft || {});
+  if (prev.atStart && (state.coach.step || "askActivity") === "askActivity") {
+    setupMode = "choice";
+    state.coach.draft = prev.draft;
+    save();
+    render();
+    return;
+  }
+  const meta = stepMeta(prev.step, prev.draft, new Date(nowMs));
+  state.coach.draft = prev.draft;
+  state.coach.step = prev.step;
+  state.coach.choices = meta.choices || null;
+  state.coach.log = [...(state.coach.log || []), { role: "coach", text: meta.text }];
+  save();
+  render();
+  scrollChat();
+  maybeSpeak(meta.text);
 }
 
 function scrollChat() {

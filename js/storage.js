@@ -3,6 +3,7 @@
 import { createTimerState } from "./timer.js";
 import { getOrCreateUserId, persistUserId } from "./identity.js";
 import { ensureActivityId } from "./history.js";
+import { migrateActivityTimeFrame } from "./plan.js";
 
 const KEY = "nag-v1";
 
@@ -28,6 +29,7 @@ export function defaultState() {
       voiceEnabled: true,
       speakReplies: true,
       notificationsEnabled: false,
+      theme: "arcade",
     },
     coach: {
       step: null,
@@ -63,20 +65,30 @@ export function clearState() {
   return finalize(defaultState());
 }
 
+function migrateCoachDraft(draft) {
+  if (!draft || typeof draft !== "object") return draft || null;
+  if (!draft.timeFrame && draft.weeklyTargetMinutes == null && draft.goalMinutes == null) return draft;
+  return migrateActivityTimeFrame(draft);
+}
+
 function migrate(parsed) {
   const base = defaultState();
+  const coach = { ...base.coach, ...(parsed.coach || {}) };
+  if (coach.draft) coach.draft = migrateCoachDraft(coach.draft);
+  const theme = parsed.settings?.theme === "plain" ? "plain" : "arcade";
   return {
     ...base,
     ...parsed,
     version: 1,
     timer: { ...base.timer, ...(parsed.timer || {}) },
-    settings: { ...base.settings, ...(parsed.settings || {}) },
+    settings: { ...base.settings, ...(parsed.settings || {}), theme },
     nag: { ...base.nag, ...(parsed.nag || {}) },
     checkins: parsed.checkins || {},
     timerLogs: parsed.timerLogs || [],
     history: parsed.history || [],
     userId: parsed.userId || null,
-    coach: { ...base.coach, ...(parsed.coach || {}) },
+    activity: parsed.activity ? migrateActivityTimeFrame(parsed.activity) : null,
+    coach,
   };
 }
 
