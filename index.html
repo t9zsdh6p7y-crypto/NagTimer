@@ -1,9 +1,18 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="arcade">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#243d34" />
+    <meta name="theme-color" content="#07060d" />
+    <script>
+      try {
+        var saved = JSON.parse(localStorage.getItem("nag-v1") || "null");
+        var theme = saved && saved.settings && saved.settings.theme === "plain" ? "plain" : "arcade";
+        document.documentElement.setAttribute("data-theme", theme);
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute("content", theme === "plain" ? "#243d34" : "#07060d");
+      } catch (e) {}
+    </script>
     <meta name="description" content="Nag — a practice coach that helps you plan the week, check in daily, and nudge you when a session starts or you fall behind." />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
@@ -12,6 +21,7 @@
     <link rel="manifest" href="manifest.json" />
     <link rel="icon" type="image/png" href="icons/favicon.png" />
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+    <link rel="preload" href="fonts/press-start-2p.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="css/theme.css" />
     <link rel="stylesheet" href="css/app.css" />
   </head>

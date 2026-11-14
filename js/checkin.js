@@ -77,7 +77,9 @@ export function loggedMinutesForWeek(week, checkins, timerLogs, liveTimer, now) 
 }
 
 export function weeklyProgress(activity, week, checkins, timerLogs, liveTimer, now) {
-  const target = activity?.weeklyTargetMinutes || 0;
+  const target = week && week.targetMinutes != null
+    ? Number(week.targetMinutes) || 0
+    : (activity?.weeklyTargetMinutes || 0);
   const logged = loggedMinutesForWeek(week, checkins, timerLogs, liveTimer, now);
   const expected = expectedMinutesByNow(week, now, { onlyEnded: false });
   const expectedEnded = expectedMinutesByNow(week, now, { onlyEnded: true });

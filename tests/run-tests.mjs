@@ -1,9 +1,11 @@
-import { deriveSessionLength, validatePlan, buildWeekPlan, sessionStartDate, sessionEndDate, expectedMinutesByNow, normalizeActivity } from "../js/plan.js";
+import { deriveSessionLength, validatePlan, buildWeekPlan, sessionStartDate, sessionEndDate, expectedMinutesByNow, normalizeActivity, weeklyMinutesFor, weekOfMonth, evenWeekGoals, migrateActivityTimeFrame, alignWeekGoals } from "../js/plan.js";
 import { makeCheckIn, upsertCheckIn, weeklyProgress, loggedMinutesForWeek } from "../js/checkin.js";
 import { createTimerState, startTimer, pauseTimer, stopTimer, elapsedMs, remainingMs } from "../js/timer.js";
 import { INTENSITY, intensityConfig, nextIntervalMs, evaluateNags, applyNagTiming, stateAfterFire, stateAfterAck, stateAfterSnooze, canSnooze } from "../js/nags.js";
 import { parseDurationMinutes, parseTimeInput, weekStartISO, localDateISO, combineDateAndTime, addDays, formatMinutes } from "../js/util.js";
-import { RuleBasedCoach, parseDaysList, parseSessionCount, parseTimes, parseIntensity } from "../js/coach/dialogue.js";
+import { RuleBasedCoach, parseDaysList, parseSessionCount, parseTimes, parseIntensity, goBack, flowSteps } from "../js/coach/dialogue.js";
+import { goBackManual, goForwardManual, manualSteps, draftFromActivity } from "../js/setup-flow.js";
+import { importState } from "../js/storage.js";
 import { createCoach, LlmCoachStub } from "../js/coach/engine.js";
 import { detectSpeech } from "../js/coach/speech.js";
 import { nagCopy, PERSONA } from "../js/coach/persona.js";
@@ -243,9 +245,13 @@ eq(turn.step, "askActivity", "starts by asking activity");
 is(turn.reply.includes("Reed"), "introduces Reed");
 turn = await rb.respond("piano lessons", { draft: turn.draft, step: turn.step });
 eq(turn.draft.name, "piano lessons", "captures activity");
-eq(turn.step, "askWeekly", "asks weekly total");
+eq(turn.step, "askTimeFrame", "asks day, week, or month");
+turn = await rb.respond("per week", { draft: turn.draft, step: turn.step });
+eq(turn.draft.timeFrame, "week", "captures a weekly goal");
+eq(turn.step, "askGoal", "asks for the time amount");
 turn = await rb.respond("three hours", { draft: turn.draft, step: turn.step });
 eq(turn.draft.weeklyTargetMinutes, 180, "captures 3 hours");
+eq(turn.draft.goalMinutes, 180, "weekly goal stored as entered");
 turn = await rb.respond("three", { draft: turn.draft, step: turn.step });
 eq(turn.draft.sessionsPerWeek, 3, "captures 3 sessions");
 eq(turn.draft.sessionLengthMinutes, 60, "derives 60 min sessions");
@@ -373,6 +379,177 @@ const friendCopy = nagCopy("friend-nag", "strict", {
   fromName: "Sam",
 });
 is(/Sam/i.test(friendCopy) && /get back to it/i.test(friendCopy), "friend nag uses the same blunt copy path");
+
+console.log("time frame conversion");
+const nov13 = new Date(2026, 10, 13, 12, 0, 0);
+const nov2 = new Date(2026, 10, 2, 12, 0, 0);
+const dec7 = new Date(2026, 11, 7, 12, 0, 0);
+const novInfo = weekOfMonth(nov13, 1);
+eq(novInfo.count, 4, "November 2026 has 4 majority weeks");
+eq(novInfo.weeks, ["2026-11-02", "2026-11-09", "2026-11-16", "2026-11-23"], "November week starts");
+eq(novInfo.index, 1, "Nov 13 is the second November week");
+eq(weekOfMonth(dec7, 1).count, 5, "December 2026 has 5 majority weeks");
+eq(evenWeekGoals(100, 3), [33, 33, 34], "monthly minutes split without losing a minute");
+eq(evenWeekGoals(600, 4), [150, 150, 150, 150], "even 600 across 4 weeks");
+eq(alignWeekGoals([120, 180], 4, 600), [120, 180, 180, 180], "extra weeks repeat the last goal");
+
+const dayPlan = normalizeActivity({
+  name: "Piano",
+  timeFrame: "day",
+  goalMinutes: 40,
+  sessionsPerWeek: 4,
+  sessionLengthCustom: false,
+  schedule: [
+    { weekday: 1, start: "16:00" },
+    { weekday: 2, start: "16:00" },
+    { weekday: 4, start: "16:00" },
+    { weekday: 5, start: "16:00" },
+  ],
+  weekStartsOn: 1,
+}, nov13);
+eq(dayPlan.weeklyTargetMinutes, 160, "per-day goal applies to each chosen day");
+eq(weeklyMinutesFor(dayPlan, nov13), 160, "day frame weekly total is stable");
+eq(deriveSessionLength(dayPlan.weeklyTargetMinutes, dayPlan.sessionsPerWeek).minutes, 40, "day goal becomes the session length");
+
+const monthEven = normalizeActivity({
+  name: "Piano",
+  timeFrame: "month",
+  goalMinutes: 600,
+  weekStyle: "even",
+  sessionsPerWeek: 3,
+  sessionLengthCustom: false,
+  schedule: [
+    { weekday: 1, start: "16:00" },
+    { weekday: 3, start: "16:00" },
+    { weekday: 5, start: "16:00" },
+  ],
+  weekStartsOn: 1,
+}, nov13);
+eq(weeklyMinutesFor(monthEven, nov13), 150, "month goal spreads evenly across November");
+eq(weeklyMinutesFor(monthEven, dec7), 120, "same monthly goal respreads across December");
+
+const monthCustom = normalizeActivity({
+  name: "Piano",
+  timeFrame: "month",
+  goalMinutes: 720,
+  weekStyle: "custom",
+  weekGoals: [120, 180, 240, 180],
+  sessionsPerWeek: 3,
+  sessionLengthCustom: false,
+  schedule: [
+    { weekday: 1, start: "16:00" },
+    { weekday: 3, start: "16:00" },
+    { weekday: 5, start: "16:00" },
+  ],
+  weekStartsOn: 1,
+}, nov13);
+const rampWeek = buildWeekPlan(monthCustom, nov13);
+const firstWeek = buildWeekPlan(monthCustom, nov2);
+eq(rampWeek.targetMinutes, 180, "week plan uses that week's goal");
+eq(firstWeek.targetMinutes, 120, "earlier week keeps its own goal");
+eq(rampWeek.sessions[0].plannedMinutes, 60, "session length follows the 3 hour week");
+eq(firstWeek.sessions[0].plannedMinutes, 40, "session length follows the 2 hour week");
+const rampProg = weeklyProgress(monthCustom, rampWeek, {}, [], createTimerState(), nov13);
+eq(rampProg.target, 180, "progress and nags use the week's goal, not the monthly total");
+eq(weeklyMinutesFor(monthCustom, dec7), 180, "a later month reuses the ramp by week index");
+
+console.log("migration");
+const legacy = migrateActivityTimeFrame({ name: "Piano", weeklyTargetMinutes: 200, sessionsPerWeek: 2 });
+eq(legacy.timeFrame, "week", "old weekly-only plan becomes time frame week");
+eq(legacy.goalMinutes, 200, "old weekly total becomes the goal");
+eq(legacy.weeklyTargetMinutes, 200, "old weekly total is kept");
+const alreadyDay = migrateActivityTimeFrame({ timeFrame: "day", goalMinutes: 25, weeklyTargetMinutes: 75, sessionsPerWeek: 3 });
+eq(alreadyDay.timeFrame, "day", "an existing day plan is not rewritten as weekly");
+eq(alreadyDay.goalMinutes, 25, "day goal minutes survive migration");
+const imported = importState({
+  activity: { name: "Piano", weeklyTargetMinutes: 90, sessionsPerWeek: 2, sessionLengthMinutes: 45, schedule: [], weekStartsOn: 1 },
+  coach: { step: "askSessions", draft: { name: "Piano", weeklyTargetMinutes: 90 }, log: [] },
+  settings: { voiceEnabled: true },
+});
+eq(imported.activity.timeFrame, "week", "saved activity migrates on import");
+eq(imported.activity.goalMinutes, 90, "imported weekly total is the week goal");
+eq(imported.coach.draft.timeFrame, "week", "in-progress coach draft migrates too");
+eq(imported.coach.draft.goalMinutes, 90, "coach draft keeps the old weekly number");
+eq(importState({ settings: {} }).settings.theme, "arcade", "arcade theme is the default");
+eq(importState({ settings: { theme: "plain" } }).settings.theme, "plain", "an explicit plain theme is kept");
+const legacyWeek = buildWeekPlan(normalizeActivity({
+  name: "Piano lessons",
+  weeklyTargetMinutes: 180,
+  sessionsPerWeek: 3,
+  sessionLengthMinutes: 60,
+  schedule: [
+    { weekday: 1, start: "16:00" },
+    { weekday: 3, start: "16:00" },
+    { weekday: 5, start: "16:00" },
+  ],
+  weekStartsOn: 1,
+}), nov13);
+eq(legacyWeek.sessions[0].plannedMinutes, 60, "old plans still script the saved session length");
+eq(legacyWeek.targetMinutes, 180, "old plans still target the weekly total");
+
+console.log("back navigation");
+let backTurn = await rb.start({});
+backTurn = await rb.respond("scales", { draft: backTurn.draft, step: backTurn.step, now: nov13 });
+backTurn = await rb.respond("per month", { draft: backTurn.draft, step: backTurn.step, now: nov13 });
+backTurn = await rb.respond("8 hours", { draft: backTurn.draft, step: backTurn.step, now: nov13 });
+eq(backTurn.step, "askWeekStyle", "month goal asks about week by week");
+eq(backTurn.draft.goalMinutes, 480, "8 hours is 480 minutes");
+let backed = goBack(backTurn.step, backTurn.draft);
+eq(backed.step, "askGoal", "back returns to the time amount");
+eq(backed.draft.name, "scales", "activity name survives back");
+eq(backed.draft.timeFrame, "month", "time frame survives back");
+eq(backed.draft.goalMinutes, 480, "the amount survives back");
+backed = goBack(backed.step, backed.draft);
+eq(backed.step, "askTimeFrame", "back returns to the time frame step");
+eq(backed.draft.name, "scales", "name still there one step earlier");
+backed = goBack(backed.step, backed.draft);
+eq(backed.step, "askActivity", "back returns to the activity step");
+eq(backed.draft.name, "scales", "the activity answer is still filled in");
+const leave = goBack(backed.step, backed.draft);
+eq(leave.atStart, true, "the first step has nowhere further back");
+eq(leave.draft.name, "scales", "leaving the first step keeps the draft");
+const saidBack = await rb.respond("back", { draft: backTurn.draft, step: backTurn.step, now: nov13 });
+eq(saidBack.step, "askGoal", "saying back uses the same step machine");
+eq(saidBack.draft.goalMinutes, 480, "saying back keeps the answer");
+eq(saidBack.wentBack, true, "back is marked as navigation");
+
+backTurn = await rb.respond("set each week", { draft: backTurn.draft, step: backTurn.step, now: nov13 });
+eq(backTurn.step, "askWeekGoals", "custom month plan asks week by week");
+backTurn = await rb.respond("2 hours", { draft: backTurn.draft, step: backTurn.step, now: nov13 });
+eq(backTurn.draft.weekGoals[0], 120, "week 1 goal captured");
+eq(backTurn.step, "askWeekGoals", "still collecting the later weeks");
+backed = goBack(backTurn.step, backTurn.draft);
+eq(backed.step, "askWeekGoals", "back stays on the week list");
+eq(backed.draft.weekGoalIndex, 0, "back returns to the previous week");
+eq(backed.draft.weekGoals[0], 120, "the week 1 answer is still there");
+is(!flowSteps({ timeFrame: "week" }).includes("askWeekGoals"), "a weekly goal skips the per-week questions");
+is(flowSteps({ timeFrame: "month", weekStyle: "custom" }).includes("askWeekGoals"), "a custom month includes per-week questions");
+
+const manualDraft = {
+  name: "scales",
+  timeFrame: "month",
+  goalMinutes: 480,
+  weekStyle: "custom",
+  weekGoals: [120, 180, 240, 180],
+  sessionsPerWeek: 3,
+  schedule: [{ weekday: 1, start: "16:00" }],
+};
+let manualNav = goBackManual("days", manualDraft);
+eq(manualNav.step, "sessions", "manual back goes to the previous question");
+eq(manualNav.draft.name, "scales", "manual back keeps the activity");
+eq(manualNav.draft.weekGoals, [120, 180, 240, 180], "manual back keeps each week's goal");
+eq(manualNav.draft.schedule[0].start, "16:00", "manual back keeps the chosen time");
+manualNav = goBackManual(manualNav.step, manualNav.draft);
+eq(manualNav.step, "weekGoals", "month setup backs into the week goals");
+const weekManual = goBackManual("sessions", { ...manualDraft, timeFrame: "week", weekStyle: "even", weekGoals: null });
+eq(weekManual.step, "goal", "weekly setup skips the month-only steps on the way back");
+eq(goBackManual("name", manualDraft).atStart, true, "manual name step is the start");
+eq(goForwardManual("name", manualDraft).step, "timeFrame", "manual next advances one step");
+eq(goForwardManual("name", manualDraft).draft.goalMinutes, 480, "manual next keeps the amount");
+const edited = draftFromActivity({ name: "Piano", weeklyTargetMinutes: 180, sessionsPerWeek: 3, sessionLengthMinutes: 60 });
+eq(edited.timeFrame, "week", "editing an old activity opens it as a weekly goal");
+eq(edited.goalMinutes, 180, "the edit form is prefilled with the saved total");
+eq(manualSteps(edited).includes("weekStyle"), false, "editing a weekly plan does not insert month steps");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) {
